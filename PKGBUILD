@@ -1,0 +1,68 @@
+# Maintainer: Lubomir Krajcovic <lubomir.krajcovic(AT)gmail(DOT)com>
+# Contributor: Vladimir Kutyavin <vlkut(AT)bk(DOT)ru>
+pkgname=xtables-addons-multikernel
+pkgver=2.2
+pkgrel=1
+pkgdesc="Additional extensions for iptables, ip6tables, etc. CHAOS, TARPIT, TEE, DELUDE and other targets; condition, geoip, ipp2p and other matches. Builds modules for all kernels detected on system."
+arch=('i686' 'x86_64')
+license=('GPL2')
+url="http://xtables-addons.sourceforge.net/"
+depends=('iptables>=1.4.5')
+makedepends=('automake' 'autoconf')
+conflicts=(xtables-addons)
+replaces=(xtables-addons)
+provides=(xtables-addons)
+source=(http://download.sourceforge.net/project/xtables-addons/Xtables-addons/$pkgver/xtables-addons-$pkgver.tar.xz)
+install=$pkgname.install
+sha512sums=('1bfdfe5a540a4aeb32511c8092662a9694bc8b58c5b369065380fdca2044b24edb1e47ed7bf301771ee36c782f8ff457fd1f8cfa76ded5aaadf35f41292f6f8e')
+
+build() {
+	# go to builddir
+	cd $srcdir/xtables-addons-$pkgver
+	# disable install-exec-hook (avoids useless calling of depmod -a at 'make install' stage)
+	sed -i 's/^install-exec-hook:$/dont-run:/' Makefile.am
+	# call automation friends
+	./autogen.sh
+	# loop through all detected kernels
+	_PACKAGES=`pacman -Qsq linux`
+	_KERNELS=`pacman -Ql $PACKAGES | grep '/modules.builtin$' | sed 's/.*\/lib\/modules\/\(.*\)\/modules.builtin/\1/g'`
+	for kernver in $_KERNELS; do
+		# check for kernel headers
+		kheaders="/usr/lib/modules/$kernver/build"
+		echo -e "\n\n\n>>> building for kernel: $kernver\n\n\n"
+		sleep 3
+		if [ ! -d "$kheaders" ]; then
+			echo "!!! SKIPPING build for kernel: $kernver"
+			echo "!!! probably missing kernel headers for $kernver ?"
+			echo "!!! could not locate directory: $kheaders"
+			continue
+		fi
+		# for stock kernels override module install path
+		# modules/xx.yy.zz-(ARCH|lts)/extra ==> /usr/lib/modules/extramodules-xx.yy-(ARCH|lts)
+		if [[ $kernver =~ ^([0-9]+)\.([0-9]+)\.[0-9]+\-[0-9]+\-(ARCH|lts)$ ]]; then
+			kmajor=${BASH_REMATCH[1]}
+			kminor=${BASH_REMATCH[2]}
+			ksuffix=${BASH_REMATCH[3]}
+			modsubdir="INSTALL_MOD_DIR=../../../usr/lib/modules/extramodules-${kmajor}.${kminor}-${ksuffix}"
+		else
+			modsubdir=""
+		fi
+		# call config, build and install subsystems
+		./configure \
+			--prefix=/usr \
+			--libexecdir=/usr/lib/iptables \
+			--sysconfdir=/etc \
+			--with-xtlibdir=/usr/lib/iptables \
+			--mandir=/usr/share/man \
+			--with-kbuild="$kheaders"
+		make || return 1
+		make -j2 DESTDIR=${pkgdir} ${modsubdir} install || return 1
+		# remove empty /lib dir (in case of override)
+		[ "x$modsubdir" != "x" ] && rm -rf "${pkgdir}/lib"
+	done
+	# gzip kernel modules
+	[ -d "${pkgdir}/lib/modules/" ] && find "${pkgdir}/lib/modules/" -name '*.ko' -exec gzip -9 {} \;
+	[ -d "${pkgdir}/usr/lib/modules/" ] && find "${pkgdir}/usr/lib/modules/" -name '*.ko' -exec gzip -9 {} \;
+	# remove exec from libraries
+	chmod a-x $pkgdir/usr/lib/iptables/*.so &>/dev/null
+}
